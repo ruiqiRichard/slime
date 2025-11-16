@@ -2,25 +2,32 @@
 
 # usage: bash examples/on_policy_distillation/run-qwen3-8B-opd.sh
 
+pkill -9 sglang
+sleep 3
+ray stop --force
+pkill -9 ray
+sleep 3
+pkill -9 ray
+
 set -ex
 
 
 # Start the teacher model server
-TEACHER_IP="127.0.0.1" # Use localhost here, you can change it to your IP
-TEACHER_PORT=13141
-LOG_FILE="/tmp/sglang_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 6).log"
+TEACHER_IP="100.64.139.24" # Use localhost here, you can change it to your IP
+TEACHER_PORT=8000
+LOG_FILE="/home/aiscuser/tmp/sglang_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 6).log"
 
 ## Launch the teacher model server in the background
-CUDA_VISIBLE_DEVICES=7 python3 -m sglang.launch_server \
-    --model-path /root/Qwen3-32B \
-    --host 0.0.0.0 \
-    --port $TEACHER_PORT \
-    --tp 1 \
-    --chunked-prefill-size 4096 \
-    --mem-fraction-static 0.6 \
-    > "$LOG_FILE" 2>&1 &
+# CUDA_VISIBLE_DEVICES=7 python3 -m sglang.launch_server \
+#     --model-path /root/Qwen3-32B \
+#     --host 0.0.0.0 \
+#     --port $TEACHER_PORT \
+#     --tp 1 \
+#     --chunked-prefill-size 4096 \
+#     --mem-fraction-static 0.6 \
+#     > "$LOG_FILE" 2>&1 &
 
-echo "Starting teacher model server..."
+# echo "Starting teacher model server..."
 
 ## Wait for the teacher model server to be ready
 until curl -sf http://$TEACHER_IP:$TEACHER_PORT/health_generate > /dev/null; do
@@ -34,6 +41,7 @@ sleep 10
 
 
 export PYTHONBUFFERED=16
+unset WANDB_RUN_ID
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -43,14 +51,14 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-source "/root/slime/scripts/models/qwen3-8B.sh"
+source "/home/aiscuser/slime/scripts/models/qwen3-4B.sh"
 
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-8B
-   --ref-load /root/Qwen3-8B_torch_dist
-   --load /root/Qwen3-8B_slime/
-   --save /root/Qwen3-8B_slime/
+   --hf-checkpoint /root/Qwen3-4B
+   --ref-load /root/Qwen3-4B_torch_dist
+   --load /home/aiscuser/slime_output/Qwen3-4B_slime/
+   --save /home/aiscuser/slime_output/Qwen3-4B_slime/
    --save-interval 20
 )
 
@@ -84,7 +92,7 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 4
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -118,14 +126,14 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   #--use-wandb
-   # --wandb-project slime-dev
-   # --wandb-group qwen3-8B-test
-   # --wandb-key ${WANDB_KEY}
+   --use-wandb
+   --wandb-project slime-dev
+   --wandb-group qwen3-8B-test
+   --wandb-key ${WANDB_API_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
+   --rollout-num-gpus-per-engine 4
    --sglang-mem-fraction-static 0.4
 )
 
@@ -155,7 +163,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    }' \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 4 \
    --rollout-num-gpus 4 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
@@ -168,25 +176,4 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
    ${RM_ARGS[@]}
-
-
-
-####clear after training
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
-
-
-
-
-
-
-
-
-
 
