@@ -6,7 +6,7 @@ from slime.utils.types import Sample
 
 async def reward_func(args, sample, **kwargs):
     payload = {
-        "text": sample.prompt + sample.response,
+        "input_ids": sample.tokens,
         "sampling_params": {
             "temperature": 0,
             "max_new_tokens": 0,
