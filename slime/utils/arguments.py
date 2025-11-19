@@ -1023,7 +1023,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--custom-acc-reward",
+                "--custom-eval-reward",
                 type=str,
                 default=None,
                 help=(

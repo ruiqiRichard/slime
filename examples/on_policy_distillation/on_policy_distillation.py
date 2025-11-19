@@ -2,18 +2,11 @@ import aiohttp
 import torch
 
 from slime.utils.types import Sample
-import wandb
-import importlib
 
-def load_function_from_path(function_path: str):
-    module_path, func_name = function_path.rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    func = getattr(module, func_name)
-    return func
 
 async def reward_func(args, sample, **kwargs):
     payload = {
-        "input_ids": sample.tokens,
+        "text": sample.prompt + sample.response,
         "sampling_params": {
             "temperature": 0,
             "max_new_tokens": 0,
@@ -42,12 +35,5 @@ def post_process_rewards(args, samples: list[Sample], **kwargs):
 
     for sample, t_log_probs in zip(samples, teacher_log_probs):
         sample.teacher_log_probs = t_log_probs
-    
-    acc_reward_path = args.custom_acc_reward
-    if acc_reward_path is not None:
-        acc_reward_func = load_function_from_path(acc_reward_path)
-        acc_rewards = [acc_reward_func(sample.response, sample.label) for sample in samples]
-        acc_avg_reward = sum(acc_rewards) / len(acc_rewards)
-        wandb.log({"rollout/acc_avg_reward": acc_avg_reward})
 
     return teacher_log_probs, teacher_log_probs
