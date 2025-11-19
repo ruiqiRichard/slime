@@ -1022,6 +1022,14 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "Path to the custom function that will post process reward, by default it will be the normalization for grpo. "
                 ),
             )
+            parser.add_argument(
+                "--custom-acc-reward",
+                type=str,
+                default=None,
+                help=(
+                    "Path to the custom function that will calculate accuracy for log purpose. "
+                ),
+            )
             return parser
 
         def add_rollout_buffer_arguments(parser):
