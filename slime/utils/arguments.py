@@ -369,6 +369,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 nargs="+",
                 help="Address and ports of the external engines.",
             )
+            parser.add_argument(
+                "--rollout-workflow-name",
+                type=str,
+                default=None,
+                help="OpenAI Agents SDK workflow name.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
