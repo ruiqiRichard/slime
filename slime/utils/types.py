@@ -29,6 +29,7 @@ class Sample:
         COMPLETED = "completed"
         TRUNCATED = "truncated"
         ABORTED = "aborted"
+        TURN_EXCEEDED = "turn_exceeded"
 
     status: Status = Status.PENDING
 

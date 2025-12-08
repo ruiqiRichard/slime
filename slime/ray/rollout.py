@@ -461,6 +461,9 @@ def _log_eval_rollout_data(rollout_id, args, data):
         if "truncated" in data[key]:
             truncated = data[key]["truncated"]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
+        if "max_turn_exceeded" in data[key]:
+            max_turn_exceeded = data[key]["max_turn_exceeded"]
+            log_dict[f"eval/{key}-max_turn_exceeded_ratio"] = sum(max_turn_exceeded) / len(max_turn_exceeded)
         if args.log_passrate:
             log_dict |= dict_add_prefix(
                 compute_pass_rate(
@@ -528,6 +531,7 @@ def _compute_metrics_from_samples(args, samples):
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
+    log_dict["max_turn_exceeded_ratio"] = np.mean([int(s.status == Sample.Status.TURN_EXCEEDED) for s in samples]).item()
     return log_dict
 
 
