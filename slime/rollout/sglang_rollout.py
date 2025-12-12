@@ -230,7 +230,7 @@ async def generate_and_rm(
 
         if args.custom_generate_function_path is not None:
             custom_generate_func = load_function(args.custom_generate_function_path)
-            sample = await custom_generate_func(args, sample, sampling_params)
+            sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
         else:
             sample = await generate(args, sample, sampling_params)
 
