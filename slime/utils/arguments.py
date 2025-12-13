@@ -696,6 +696,16 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default="grpo",
             )
             parser.add_argument(
+                "--opd-mode",
+                type=str,
+                choices=[
+                    "token",
+                    "turn",
+                    "traj"
+                ],
+                default="token",
+            )
+            parser.add_argument(
                 "--disable-compute-advantages-and-returns",
                 action="store_false",
                 dest="compute_advantages_and_returns",
