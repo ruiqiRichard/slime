@@ -300,6 +300,11 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             teacher_log_prob - student_log_prob
             for teacher_log_prob, student_log_prob in zip(teacher_log_probs, student_log_probs)
         ]
+        mask_log_diffs = [log_diff * loss_mask for log_diff, loss_mask in zip(log_diffs, loss_masks)]
+        negative_log_diffs_ratio = [[(log_diff < x).float().mean().item() for log_diff in mask_log_diffs] for x in [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]]
+        for ratio_list, x in zip(negative_log_diffs_ratio, [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]):
+            rollout_data[f'negative_log_diffs_ratio_{x}'] = ratio_list
+        
         if args.opd_mode == "token":
             advantages = log_diffs
         elif args.opd_mode == "turn":

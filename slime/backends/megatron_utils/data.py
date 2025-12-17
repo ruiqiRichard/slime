@@ -330,6 +330,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
+                    # if key == "advantages" and args.advantage_estimator == "on_policy_distillation":
+                    #     # calculate percentage of negative advantages smaller than 0, -0.1, -0.2, -0.3, -0.4
+                    #     splitted_advantages = [(adv_i * loss_mask_i) for adv_i, loss_mask_i in zip(val.split(response_lengths, dim=0), loss_masks)]
+                    #     negative_counts = [sum([(adv_i < x).sum().item() for adv_i in splitted_advantages]) for x in [0.0, -0.1, -0.2, -0.3, -0.4]]
+                    #     total_counts = sum([loss_mask_i.sum().item() for loss_mask_i in loss_masks])
+                    #     for x, count in zip([0.0, -0.1, -0.2, -0.3, -0.4], negative_counts):
+                    #         ratio = count / total_counts
+                    #         log_dict[f"rollout/negative_advantage_ratio_{x}"] = ratio
                     if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
                         sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
                         val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
