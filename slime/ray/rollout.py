@@ -529,9 +529,9 @@ def _compute_metrics_from_samples(args, samples):
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
     log_dict["max_turn_exceeded_ratio"] = np.mean([int(s.status == Sample.Status.TURN_EXCEEDED) for s in samples]).item()
-    if getattr(samples[0], "num_turns"):
+    if getattr(samples[0], "num_turns", None):
         log_dict["avg_num_turns"] = np.mean([s.num_turns for s in samples]).item()
-    if getattr(samples[0], "response_length"):
+    if getattr(samples[0], "response_length", None):
         log_dict["avg_response_length"] = np.mean([s.response_length for s in samples]).item()
     return log_dict
 
