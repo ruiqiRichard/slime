@@ -109,7 +109,9 @@ def gather_log_data(
             dst=mpu.get_data_parallel_src_rank(with_context_parallel=True),
             group=mpu.get_data_parallel_group_gloo(with_context_parallel=True),
         )
-
+        for key in log_dict:
+            for d in gathered_log_dict:
+                assert key in d, f"Key '{key}' missing in gathered log dict {d.keys()}"
         reduced_log_dict = {
             f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
         }
@@ -350,6 +352,36 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             else:
                 raise ValueError(f"Unsupported type: {type(val)}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
+
+        if args.advantage_estimator == "on_policy_distillation":
+            thresholds = [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]
+            # Ensure consistent keys across ranks (avoid gather-time KeyError).
+            for thr in thresholds:
+                log_dict[f"negative_log_diffs_ratio_{thr}"] = float("nan")
+
+            teacher_log_probs = rollout_data.get("teacher_log_probs")
+            student_log_probs = rollout_data.get("log_probs")
+            if teacher_log_probs is not None and student_log_probs is not None:
+                ratios_sum = {thr: 0.0 for thr in thresholds}
+                num_samples = 0
+                for t_log_prob, s_log_prob, loss_mask, response_length in zip(
+                    teacher_log_probs, student_log_probs, loss_masks, response_lengths
+                ):
+                    if not isinstance(t_log_prob, torch.Tensor) or not isinstance(s_log_prob, torch.Tensor):
+                        continue
+                    t_log_prob = t_log_prob.to(device=s_log_prob.device)
+                    # Align to response tokens (teacher log-probs may include prompt tokens).
+                    t_log_prob = t_log_prob[-response_length:]
+                    if t_log_prob.shape != s_log_prob.shape:
+                        continue
+                    masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=s_log_prob.device)
+                    for thr in thresholds:
+                        ratios_sum[thr] += (masked_log_diff < thr).float().mean().item()
+                    num_samples += 1
+
+                if num_samples > 0:
+                    for thr in thresholds:
+                        log_dict[f"negative_log_diffs_ratio_{thr}"] = ratios_sum[thr] / num_samples
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and reduced_log_dict is not None:
