@@ -356,7 +356,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
 
             teacher_log_probs = rollout_data.get("teacher_log_probs")
             student_log_probs = rollout_data.get("log_probs")
-            print("****************teacher_log_probs****************", len(teacher_log_probs))
             if teacher_log_probs is not None and student_log_probs is not None:
                 ratios_sum = {thr: 0.0 for thr in thresholds}
                 ratios_sum_gt = {thr: 0.0 for thr in gt_thresholds}
