@@ -376,7 +376,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         continue
                     masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=s_log_prob.device)
                     for thr in thresholds:
-                        ratios_sum[thr] += (masked_log_diff < thr).float().mean().item()
+                        ratios_sum[thr] += (masked_log_diff < thr).float().sum().item() / loss_mask.sum().item()
                     num_samples += 1
 
                 if num_samples > 0:
