@@ -332,14 +332,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
-                    # if key == "advantages" and args.advantage_estimator == "on_policy_distillation":
-                    #     # calculate percentage of negative advantages smaller than 0, -0.1, -0.2, -0.3, -0.4
-                    #     splitted_advantages = [(adv_i * loss_mask_i) for adv_i, loss_mask_i in zip(val.split(response_lengths, dim=0), loss_masks)]
-                    #     negative_counts = [sum([(adv_i < x).sum().item() for adv_i in splitted_advantages]) for x in [0.0, -0.1, -0.2, -0.3, -0.4]]
-                    #     total_counts = sum([loss_mask_i.sum().item() for loss_mask_i in loss_masks])
-                    #     for x, count in zip([0.0, -0.1, -0.2, -0.3, -0.4], negative_counts):
-                    #         ratio = count / total_counts
-                    #         log_dict[f"rollout/negative_advantage_ratio_{x}"] = ratio
                     if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
                         sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
                         val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
@@ -355,14 +347,19 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
 
         if args.advantage_estimator == "on_policy_distillation":
             thresholds = [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]
+            gt_thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
             # Ensure consistent keys across ranks (avoid gather-time KeyError).
             for thr in thresholds:
-                log_dict[f"negative_log_diffs_ratio_{thr}"] = float("nan")
+                log_dict[f"negative_log_diffs_ratio_<{thr}"] = float("nan")
+            for thr in gt_thresholds:
+                log_dict[f"negative_log_diffs_ratio_>{thr}"] = float("nan")
 
             teacher_log_probs = rollout_data.get("teacher_log_probs")
             student_log_probs = rollout_data.get("log_probs")
+            print("****************teacher_log_probs****************", len(teacher_log_probs))
             if teacher_log_probs is not None and student_log_probs is not None:
                 ratios_sum = {thr: 0.0 for thr in thresholds}
+                ratios_sum_gt = {thr: 0.0 for thr in gt_thresholds}
                 num_samples = 0
                 for t_log_prob, s_log_prob, loss_mask, response_length in zip(
                     teacher_log_probs, student_log_probs, loss_masks, response_lengths
@@ -377,11 +374,15 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=s_log_prob.device)
                     for thr in thresholds:
                         ratios_sum[thr] += (masked_log_diff < thr).float().sum().item() / loss_mask.sum().item()
+                    for thr in gt_thresholds:
+                        ratios_sum_gt[thr] += (masked_log_diff > thr).float().sum().item() / loss_mask.sum().item()
                     num_samples += 1
 
                 if num_samples > 0:
                     for thr in thresholds:
-                        log_dict[f"negative_log_diffs_ratio_{thr}"] = ratios_sum[thr] / num_samples
+                        log_dict[f"negative_log_diffs_ratio_<{thr}"] = ratios_sum[thr] / num_samples
+                    for thr in gt_thresholds:
+                        log_dict[f"negative_log_diffs_ratio_>{thr}"] = ratios_sum_gt[thr] / num_samples
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and reduced_log_dict is not None:
