@@ -368,7 +368,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     t_log_prob = t_log_prob.to(device=s_log_prob.device)
                     # Align to response tokens (teacher log-probs may include prompt tokens).
                     t_log_prob = t_log_prob[-response_length:]
-                    if t_log_prob.shape != s_log_prob.shape:
+                    if t_log_prob.shape != s_log_prob.shape or loss_mask.sum().item() == 0.0:
                         continue
                     masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=s_log_prob.device)
                     for thr in thresholds:
