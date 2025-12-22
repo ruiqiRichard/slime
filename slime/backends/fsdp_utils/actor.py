@@ -23,6 +23,7 @@ from slime.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from slime.utils.ray_utils import Box
 from slime.utils.timer import Timer, inverse_timer, timer
 from slime.utils.wandb_utils import init_wandb_secondary
+from slime.utils.opd_utils import get_opd_turn_advantages
 
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint
@@ -375,11 +376,47 @@ class FSDPTrainRayActor(TrainRayActor):
         rank = dist.get_rank()
 
         rollout_data = process_rollout_data(self.args, rollout_data_ref, rank, world_size)
+        log_probs: list[torch.Tensor] = rollout_data.get("log_probs")
+        loss_masks: list[torch.Tensor] = rollout_data.get("loss_masks")
+        assert log_probs is not None, "log_probs must be computed for actor training"
         if self.args.advantage_estimator in ["grpo", "gspo"]:
             rollout_data["advantages"] = rollout_data["returns"] = [
                 torch.tensor([rollout_data["rewards"][i]] * rollout_data["response_lengths"][i])
                 for i in range(len(rollout_data["rewards"]))
             ]
+        elif self.args.advantage_estimator == "on_policy_distillation":
+            student_log_probs = log_probs
+            teacher_log_probs = rollout_data.get("teacher_log_probs")
+            response_lengths = rollout_data.get("response_lengths")
+            device = student_log_probs[0].device
+            teacher_log_probs = [t_log_prob.to(device=device) for t_log_prob in teacher_log_probs]
+            teacher_log_probs = [
+                t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths)
+            ]
+            log_diffs = [
+                teacher_log_prob - student_log_prob
+                for teacher_log_prob, student_log_prob in zip(teacher_log_probs, student_log_probs)
+            ]
+            # mask_log_diffs = [log_diff * loss_mask for log_diff, loss_mask in zip(log_diffs, loss_masks)]
+            # negative_log_diffs_ratio = [[(log_diff < x).float().mean().item() for log_diff in mask_log_diffs] for x in [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]]
+            # for ratio_list, x in zip(negative_log_diffs_ratio, [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]):
+            #     rollout_data[f'negative_log_diffs_ratio_{x}'] = ratio_list
+            
+            if self.args.opd_mode == "token":
+                advantages = log_diffs
+            elif self.args.opd_mode == "turn":
+                advantages = get_opd_turn_advantages(
+                    log_diffs=log_diffs,
+                    loss_masks=loss_masks,
+                )
+            elif self.args.opd_mode == "traj":
+                advantages = []
+                for log_diff, mask in zip(log_diffs, loss_masks):
+                    traj_adv = torch.zeros_like(log_diff)
+                    traj_sum = (log_diff * mask).sum()
+                    traj_mean = traj_sum / (mask.sum() + 1e-8)
+                    traj_adv += traj_mean
+                    advantages.append(traj_adv)
         else:
             raise NotImplementedError(f"Unsupported advantage_estimator {self.args.advantage_estimator}")
 
