@@ -702,8 +702,6 @@ def loss_function(
     """
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
-    print("!!!!!!!!!!!!!", batch['opd_evict_mask'])
-    import pdb; pdb.set_trace()
 
     sum_of_sample_mean = get_sum_of_sample_mean(
         batch["total_lengths"],
