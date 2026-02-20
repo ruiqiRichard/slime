@@ -213,6 +213,7 @@ def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
         "rollout_routed_experts",
         "prompt",
         "teacher_log_probs",
+        "opd_evict_mask"
     ]:
         if key not in data:
             continue

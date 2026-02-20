@@ -361,6 +361,7 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "opd_evict_mask"
             ],
         )
 

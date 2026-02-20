@@ -256,6 +256,9 @@ class RolloutManager:
 
         if "teacher_log_probs" in samples[0].__dict__:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
+        
+        if "opd_evict_mask" in samples[0].spec_info.__dict__: 
+            train_data["opd_evict_mask"] = [sample.spec_info.opd_evict_mask for sample in samples]
 
         return train_data
 
