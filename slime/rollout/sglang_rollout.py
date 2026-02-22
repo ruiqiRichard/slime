@@ -58,6 +58,10 @@ class GenerateState(metaclass=SingletonMeta):
             skip_special_tokens=args.rollout_skip_special_tokens,
             no_stop_trim=True,
             spaces_between_special_tokens=False,
+            custom_params={
+                "opd_peak_threshold": args.rollout_opd_peak_threshold,
+                "opd_peak_height": args.rollout_opd_peak_height,
+            },
         )
 
         if getattr(args, "sglang_enable_deterministic_inference", False):

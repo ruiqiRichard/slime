@@ -375,6 +375,18 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="OpenAI Agents SDK workflow name.",
             )
+            parser.add_argument(
+                "--rollout-opd-peak-threshold",
+                type=float,
+                default=0.0,
+                help="The peak threshold for OPD rollout.",
+            )
+            parser.add_argument(
+                "--rollout-opd-peak-height",
+                type=float,
+                default=1.1,
+                help="The peak height for OPD rollout.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
