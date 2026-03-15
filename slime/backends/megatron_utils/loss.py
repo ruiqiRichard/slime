@@ -535,7 +535,35 @@ def policy_loss_function(
     train_rollout_logprob_abs_diff = None
     if "rollout_log_probs" in batch:
         rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
-        train_rollout_logprob_abs_diff = sum_of_sample_mean((old_log_probs - rollout_log_probs).abs())
+        abs_diff = (old_log_probs - rollout_log_probs).abs()
+
+        opd_evict_mask = batch.get("opd_evict_mask")
+        if opd_evict_mask is not None:
+            response_evict_masks = []
+            for sample_mask, total_length, response_length in zip(
+                opd_evict_mask,
+                total_lengths,
+                response_lengths,
+            ):
+                mask = torch.as_tensor(sample_mask, device=abs_diff.device)
+                if mask.numel() == total_length:
+                    mask = mask[-response_length:]
+                else:
+                    assert (
+                        mask.numel() == response_length
+                    ), f"Expected evict mask length {response_length} (or total length {total_length}), got {mask.numel()}"
+                response_evict_masks.append(mask.float())
+
+            policy_masks = [1.0 - mask for mask in response_evict_masks]
+            sum_of_policy_sample_mean = get_sum_of_sample_mean(
+                total_lengths,
+                response_lengths,
+                policy_masks,
+                args.calculate_per_token_loss,
+            )
+            train_rollout_logprob_abs_diff = sum_of_policy_sample_mean(abs_diff)
+        else:
+            train_rollout_logprob_abs_diff = sum_of_sample_mean(abs_diff)
 
     reported_loss = {
         "loss": loss.clone().detach(),

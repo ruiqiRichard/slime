@@ -16,7 +16,7 @@ from slime.utils.metric_utils import compute_pass_rate
 from slime.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from slime.utils.types import RolloutBatch
 
-from .cp_utils import get_sum_of_sample_mean, slice_log_prob_with_cp, slice_with_cp
+from .cp_utils import get_sum_of_sample_mean, slice_with_cp
 
 
 def get_batch(
@@ -332,8 +332,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 if isinstance(val[0], torch.Tensor):
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
-                    if key == "advantages" and args.advantage_estimator == "on_policy_distillation":
-                        continue
                     val = torch.cat(val).clone().detach()
                     if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
                         sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
@@ -351,99 +349,79 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         if args.advantage_estimator == "on_policy_distillation":
             thresholds = [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]
             gt_thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
-            # Ensure consistent keys across ranks (avoid gather-time KeyError).
             for thr in thresholds:
-                log_dict[f"negative_log_diffs_ratio_<{thr}"] = float("nan")
+                log_dict[f"adv_ratio_<{thr}"] = float("nan")
             for thr in gt_thresholds:
-                log_dict[f"negative_log_diffs_ratio_>{thr}"] = float("nan")
-            log_dict["advantages"] = 0.0
+                log_dict[f"adv_ratio_>{thr}"] = float("nan")
             log_dict["positive_advantages_mean"] = 0.0
             log_dict["negative_advantages_mean"] = 0.0
+            log_dict["opd_evict_ratio"] = 0.0
 
-            teacher_log_probs = rollout_data.get("teacher_log_probs")
-            student_log_probs = rollout_data.get("student_log_probs")
             advantages = rollout_data.get("advantages")
             opd_evict_mask = rollout_data.get("opd_evict_mask")
-            if teacher_log_probs is not None and student_log_probs is not None:
-                ratios_sum = {thr: 0.0 for thr in thresholds}
-                ratios_sum_gt = {thr: 0.0 for thr in gt_thresholds}
-                num_samples = 0
-                for log_prob, t_log_prob, s_log_prob, loss_mask, response_length in zip(
-                    rollout_data.get("log_probs"), teacher_log_probs, student_log_probs, loss_masks, response_lengths
+            if opd_evict_mask is not None:
+                evict_count = 0.0
+                evict_total = 0.0
+                for sample_mask, total_length, response_length in zip(
+                    opd_evict_mask,
+                    total_lengths,
+                    response_lengths,
                 ):
-                    if not isinstance(t_log_prob, torch.Tensor) or not isinstance(s_log_prob, torch.Tensor):
-                        continue
-                    s_log_prob = s_log_prob.to(device=log_prob.device).clone().detach()
-                    t_log_prob = t_log_prob.to(device=log_prob.device).clone().detach()
-                    # Align to response tokens (teacher log-probs may include prompt tokens).
-                    t_log_prob = t_log_prob[-response_length:]
-                    if t_log_prob.shape != s_log_prob.shape or loss_mask.sum().item() == 0.0:
-                        continue
-                    masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=log_prob.device)
-                    for thr in thresholds:
-                        ratios_sum[thr] += (masked_log_diff < thr).float().sum().item() / (loss_mask.sum().item() + 1e-13)
-                    for thr in gt_thresholds:
-                        ratios_sum_gt[thr] += (masked_log_diff > thr).float().sum().item() / (loss_mask.sum().item() + 1e-13)
-                    num_samples += 1
+                    mask = torch.as_tensor(sample_mask, dtype=torch.float32)
+                    if mask.numel() == total_length:
+                        mask = mask[-response_length:]
+                    else:
+                        assert (
+                            mask.numel() == response_length
+                        ), f"Expected evict mask length {response_length} (or total length {total_length}), got {mask.numel()}"
+                    evict_count += mask.sum().item()
+                    evict_total += mask.numel()
 
-                if num_samples > 0:
-                    for thr in thresholds:
-                        log_dict[f"negative_log_diffs_ratio_<{thr}"] = ratios_sum[thr] / num_samples
-                    for thr in gt_thresholds:
-                        log_dict[f"negative_log_diffs_ratio_>{thr}"] = ratios_sum_gt[thr] / num_samples
+                if evict_total > 0:
+                    log_dict["opd_evict_ratio"] = evict_count / evict_total
 
             if advantages is not None:
-                valid_adv_sum = 0.0
-                valid_adv_count = 0.0
+                adv_count = 0.0
                 pos_adv_sum = 0.0
                 neg_adv_sum = 0.0
                 pos_adv_count = 0.0
                 neg_adv_count = 0.0
-                for idx, (adv, total_length, response_length) in enumerate(
-                    zip(advantages, total_lengths, response_lengths)
-                ):
+                adv_ratio_lt = {thr: 0.0 for thr in thresholds}
+                adv_ratio_gt = {thr: 0.0 for thr in gt_thresholds}
+                for adv in advantages:
                     if not isinstance(adv, torch.Tensor) or adv.numel() == 0:
                         continue
                     adv = adv.float().clone().detach()
-                    if opd_evict_mask is not None and idx < len(opd_evict_mask):
-                        evict_mask = torch.as_tensor(opd_evict_mask[idx], device=adv.device)
-                        if evict_mask.numel() == total_length:
-                            evict_mask = evict_mask[-response_length:]
-                        else:
-                            assert (
-                                evict_mask.numel() == response_length
-                            ), f"Expected evict mask length {response_length} (or total length {total_length}), got {evict_mask.numel()}"
-                        evict_mask = slice_log_prob_with_cp(evict_mask, total_length, response_length).bool()
-                        assert evict_mask.shape == adv.shape, f"Evict mask shape {evict_mask.shape} != advantages {adv.shape}"
-                        valid_mask = ~evict_mask
-                    else:
-                        valid_mask = torch.ones_like(adv, dtype=torch.bool)
+                    adv_count += adv.numel()
 
-                    valid_adv = adv[valid_mask]
-                    if valid_adv.numel() == 0:
-                        continue
-
-                    valid_adv_sum += valid_adv.sum().item()
-                    valid_adv_count += valid_adv.numel()
-
-                    pos_vals = valid_adv[valid_adv > 0]
-                    neg_vals = valid_adv[valid_adv < 0]
+                    pos_vals = adv[adv > 0]
+                    neg_vals = adv[adv < 0]
                     pos_adv_sum += pos_vals.sum().item()
                     neg_adv_sum += neg_vals.sum().item()
                     pos_adv_count += pos_vals.numel()
                     neg_adv_count += neg_vals.numel()
+                    for thr in thresholds:
+                        adv_ratio_lt[thr] += (adv < thr).sum().item()
+                    for thr in gt_thresholds:
+                        adv_ratio_gt[thr] += (adv > thr).sum().item()
 
-                stats = torch.tensor(
-                    [valid_adv_sum, valid_adv_count, pos_adv_sum, pos_adv_count, neg_adv_sum, neg_adv_count],
-                    dtype=torch.float64,
-                    device=torch.cuda.current_device(),
-                )
+                stats_list = [adv_count, pos_adv_sum, pos_adv_count, neg_adv_sum, neg_adv_count]
+                stats_list.extend(adv_ratio_lt[thr] for thr in thresholds)
+                stats_list.extend(adv_ratio_gt[thr] for thr in gt_thresholds)
+                stats = torch.tensor(stats_list, dtype=torch.float64, device=torch.cuda.current_device())
                 if cp_size > 1:
                     dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=mpu.get_context_parallel_group())
 
-                valid_adv_sum, valid_adv_count, pos_adv_sum, pos_adv_count, neg_adv_sum, neg_adv_count = stats.tolist()
-                if valid_adv_count > 0:
-                    log_dict["advantages"] = valid_adv_sum / valid_adv_count
+                stats_values = stats.tolist()
+                adv_count, pos_adv_sum, pos_adv_count, neg_adv_sum, neg_adv_count = stats_values[:5]
+                lt_values = stats_values[5 : 5 + len(thresholds)]
+                gt_values = stats_values[5 + len(thresholds) :]
+
+                if adv_count > 0:
+                    for thr, count in zip(thresholds, lt_values):
+                        log_dict[f"adv_ratio_<{thr}"] = count / adv_count
+                    for thr, count in zip(gt_thresholds, gt_values):
+                        log_dict[f"adv_ratio_>{thr}"] = count / adv_count
 
                 if pos_adv_count > 0:
                     log_dict["positive_advantages_mean"] = pos_adv_sum / pos_adv_count
