@@ -361,25 +361,25 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             log_dict["negative_advantages_mean"] = 0.0
 
             teacher_log_probs = rollout_data.get("teacher_log_probs")
-            student_log_probs = rollout_data.get("log_probs")
+            student_log_probs = rollout_data.get("student_log_probs")
             advantages = rollout_data.get("advantages")
             opd_evict_mask = rollout_data.get("opd_evict_mask")
             if teacher_log_probs is not None and student_log_probs is not None:
                 ratios_sum = {thr: 0.0 for thr in thresholds}
                 ratios_sum_gt = {thr: 0.0 for thr in gt_thresholds}
                 num_samples = 0
-                for t_log_prob, s_log_prob, loss_mask, response_length in zip(
-                    teacher_log_probs, student_log_probs, loss_masks, response_lengths
+                for log_prob, t_log_prob, s_log_prob, loss_mask, response_length in zip(
+                    rollout_data.get("log_probs"), teacher_log_probs, student_log_probs, loss_masks, response_lengths
                 ):
                     if not isinstance(t_log_prob, torch.Tensor) or not isinstance(s_log_prob, torch.Tensor):
                         continue
-                    s_log_prob = s_log_prob.clone().detach()
-                    t_log_prob = t_log_prob.to(device=s_log_prob.device).clone().detach()
+                    s_log_prob = s_log_prob.to(device=log_prob.device).clone().detach()
+                    t_log_prob = t_log_prob.to(device=log_prob.device).clone().detach()
                     # Align to response tokens (teacher log-probs may include prompt tokens).
                     t_log_prob = t_log_prob[-response_length:]
                     if t_log_prob.shape != s_log_prob.shape or loss_mask.sum().item() == 0.0:
                         continue
-                    masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=s_log_prob.device)
+                    masked_log_diff = (t_log_prob - s_log_prob) * loss_mask.to(device=log_prob.device)
                     for thr in thresholds:
                         ratios_sum[thr] += (masked_log_diff < thr).float().sum().item() / (loss_mask.sum().item() + 1e-13)
                     for thr in gt_thresholds:
