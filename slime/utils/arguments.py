@@ -387,6 +387,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=1.1,
                 help="The peak height for OPD rollout.",
             )
+            parser.add_argument(
+                "--eval-opd-peak-height",
+                type=float,
+                default=1.1,
+                help="The peak height for OPD eval.",
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
