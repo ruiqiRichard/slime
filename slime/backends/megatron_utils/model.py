@@ -361,7 +361,9 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
-                "opd_evict_mask"
+                "teacher_log_probs",
+                "student_log_probs",
+                "opd_evict_mask",
             ],
         )
 

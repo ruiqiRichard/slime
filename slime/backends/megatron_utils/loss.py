@@ -19,7 +19,12 @@ from slime.utils.ppo_utils import (
 from slime.utils.opd_utils import get_opd_turn_advantages
 from slime.utils.types import RolloutBatch
 
-from .cp_utils import all_gather_with_cp, get_logits_and_tokens_offset_with_cp, get_sum_of_sample_mean
+from .cp_utils import (
+    all_gather_with_cp,
+    get_logits_and_tokens_offset_with_cp,
+    get_sum_of_sample_mean,
+    slice_log_prob_with_cp,
+)
 
 
 def get_responses(
@@ -188,6 +193,30 @@ def get_values(
     return {
         "values": value_list,
     }
+
+
+def get_response_evict_masks(
+    opd_evict_mask: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Normalize OPD evict masks to response-length float tensors."""
+    response_evict_masks = []
+    for sample_mask, total_length, response_length in zip(
+        opd_evict_mask,
+        total_lengths,
+        response_lengths,
+    ):
+        mask = torch.as_tensor(sample_mask, device=device)
+        if mask.numel() == total_length:
+            mask = mask[-response_length:]
+        else:
+            assert mask.numel() == response_length, (
+                f"Expected evict mask length {response_length} (or total length {total_length}), got {mask.numel()}"
+            )
+        response_evict_masks.append(mask.float())
+    return response_evict_masks
 
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
@@ -533,27 +562,20 @@ def policy_loss_function(
         loss += 0 * logits.sum()
 
     train_rollout_logprob_abs_diff = None
-    if "rollout_log_probs" in batch:
-        rollout_log_probs = torch.cat(batch["rollout_log_probs"], dim=0)
+    opd_evict_metrics = {}
+    opd_evict_mask = batch.get("opd_evict_mask")
+    rollout_log_probs_list = batch.get("rollout_log_probs")
+    if rollout_log_probs_list is not None:
+        rollout_log_probs = torch.cat(rollout_log_probs_list, dim=0)
         abs_diff = (old_log_probs - rollout_log_probs).abs()
 
-        opd_evict_mask = batch.get("opd_evict_mask")
         if opd_evict_mask is not None:
-            response_evict_masks = []
-            for sample_mask, total_length, response_length in zip(
+            response_evict_masks = get_response_evict_masks(
                 opd_evict_mask,
                 total_lengths,
                 response_lengths,
-            ):
-                mask = torch.as_tensor(sample_mask, device=abs_diff.device)
-                if mask.numel() == total_length:
-                    mask = mask[-response_length:]
-                else:
-                    assert (
-                        mask.numel() == response_length
-                    ), f"Expected evict mask length {response_length} (or total length {total_length}), got {mask.numel()}"
-                response_evict_masks.append(mask.float())
-
+                log_probs.device,
+            )
             policy_masks = [1.0 - mask for mask in response_evict_masks]
             sum_of_policy_sample_mean = get_sum_of_sample_mean(
                 total_lengths,
@@ -565,6 +587,54 @@ def policy_loss_function(
         else:
             train_rollout_logprob_abs_diff = sum_of_sample_mean(abs_diff)
 
+    if opd_evict_mask is not None:
+        response_evict_masks = get_response_evict_masks(
+            opd_evict_mask,
+            total_lengths,
+            response_lengths,
+            log_probs.device,
+        )
+        sum_of_evict_sample_mean = get_sum_of_sample_mean(
+            total_lengths,
+            response_lengths,
+            response_evict_masks,
+            args.calculate_per_token_loss,
+        )
+
+        opd_evict_metrics["opd_evict_log_probs"] = sum_of_evict_sample_mean(log_probs.detach())
+        opd_evict_metrics["opd_evict_old_log_probs"] = sum_of_evict_sample_mean(old_log_probs.detach())
+        if rollout_log_probs_list is not None:
+            opd_evict_metrics["opd_evict_rollout_log_probs"] = sum_of_evict_sample_mean(rollout_log_probs.detach())
+        for source_key in ["teacher_log_probs", "student_log_probs"]:
+            source_log_probs = batch.get(source_key)
+            if source_log_probs is None:
+                continue
+            evict_source_log_probs = []
+            for source_log_prob, total_length, response_length in zip(
+                source_log_probs,
+                total_lengths,
+                response_lengths,
+            ):
+                source_log_prob = torch.as_tensor(source_log_prob, device=log_probs.device)[-response_length:]
+                evict_source_log_probs.append(
+                    slice_log_prob_with_cp(source_log_prob, total_length, response_length)
+                )
+            opd_evict_metrics[f"opd_evict_{source_key}"] = sum_of_evict_sample_mean(
+                torch.cat(evict_source_log_probs, dim=0).detach()
+            )
+
+        if log_probs.numel() > 0 and loss.requires_grad:
+            logprob_grad = torch.autograd.grad(
+                loss,
+                log_probs,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            if logprob_grad is not None:
+                opd_evict_metrics["opd_evict_grad_norm"] = torch.sqrt(
+                    torch.clamp_min(sum_of_evict_sample_mean(logprob_grad.detach().square()), 0.0)
+                )
+
     reported_loss = {
         "loss": loss.clone().detach(),
         "pg_loss": pg_loss.clone().detach(),
@@ -575,6 +645,9 @@ def policy_loss_function(
 
     if train_rollout_logprob_abs_diff is not None:
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
+
+    for metric_key, metric_value in opd_evict_metrics.items():
+        reported_loss[metric_key] = metric_value.clone().detach()
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()
