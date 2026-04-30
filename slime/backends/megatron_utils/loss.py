@@ -482,6 +482,12 @@ def policy_loss_function(
         ppo_kl = old_log_probs - log_probs
 
     pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
+    ratio = (-ppo_kl).exp()
+    logprob_grad = torch.where(
+        pg_clipfrac.bool(),
+        torch.zeros_like(ratio),
+        -ratio * advantages,
+    )
 
     # Apply off-policy correction using importance sampling if enabled
     if args.use_tis:
@@ -556,6 +562,24 @@ def policy_loss_function(
         kl_loss = sum_of_sample_mean(kl)
 
         loss = loss + args.kl_loss_coef * kl_loss
+        if args.kl_loss_coef != 0:
+            log_ratio = log_probs.float() - ref_log_probs.float()
+            if args.kl_loss_type == "k1":
+                kl_logprob_grad = torch.ones_like(log_ratio)
+            elif args.kl_loss_type == "k2":
+                kl_logprob_grad = log_ratio
+            elif args.kl_loss_type in ["k3", "low_var_kl"]:
+                raw_kl = torch.exp(-log_ratio) - 1 + log_ratio
+                kl_logprob_grad = 1 - torch.exp(-log_ratio)
+                if args.kl_loss_type == "low_var_kl":
+                    kl_logprob_grad = torch.where(
+                        (raw_kl >= -10) & (raw_kl <= 10),
+                        kl_logprob_grad,
+                        torch.zeros_like(kl_logprob_grad),
+                    )
+            else:
+                raise ValueError(f"Unknown kl_loss_type: {args.kl_loss_type}")
+            logprob_grad = logprob_grad + args.kl_loss_coef * kl_logprob_grad.to(logprob_grad.dtype)
 
     # make sure the gradient could backprop correctly.
     if log_probs.numel() == 0:
@@ -623,17 +647,10 @@ def policy_loss_function(
                 torch.cat(evict_source_log_probs, dim=0).detach()
             )
 
-        if log_probs.numel() > 0 and loss.requires_grad:
-            logprob_grad = torch.autograd.grad(
-                loss,
-                log_probs,
-                retain_graph=True,
-                allow_unused=True,
-            )[0]
-            if logprob_grad is not None:
-                opd_evict_metrics["opd_evict_grad_norm"] = torch.sqrt(
-                    torch.clamp_min(sum_of_evict_sample_mean(logprob_grad.detach().square()), 0.0)
-                )
+        if log_probs.numel() > 0:
+            opd_evict_metrics["opd_evict_grad_norm"] = torch.sqrt(
+                torch.clamp_min(sum_of_evict_sample_mean(logprob_grad.detach().square()), 0.0)
+            )
 
     reported_loss = {
         "loss": loss.clone().detach(),
