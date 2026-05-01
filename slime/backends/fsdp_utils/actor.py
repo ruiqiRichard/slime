@@ -385,12 +385,11 @@ class FSDPTrainRayActor(TrainRayActor):
                 for i in range(len(rollout_data["rewards"]))
             ]
         elif self.args.advantage_estimator == "on_policy_distillation":
-            student_log_probs = rollout_data.get("student_log_probs")
+            student_log_probs = log_probs
             teacher_log_probs = rollout_data.get("teacher_log_probs")
             response_lengths = rollout_data.get("response_lengths")
-            device = log_probs[0].device
+            device = student_log_probs[0].device
             teacher_log_probs = [t_log_prob.to(device=device) for t_log_prob in teacher_log_probs]
-            student_log_probs = [s_log_prob.to(device=device) for s_log_prob in student_log_probs]
             teacher_log_probs = [
                 t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths)
             ]
