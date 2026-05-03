@@ -333,7 +333,15 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
-                    if key in ["log_probs", "ref_log_probs", "rollout_log_probs", "returns", "advantages", "values"]:
+                    if key in [
+                        "log_probs",
+                        "ref_log_probs",
+                        "rollout_log_probs",
+                        "returns",
+                        "advantages",
+                        "values",
+                        "opd_reverse_kl",
+                    ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(total_lengths, response_lengths, loss_masks)
                         val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
                     else:
@@ -346,18 +354,18 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 raise ValueError(f"Unsupported type: {type(val)}")
             log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
-        if args.advantage_estimator == "on_policy_distillation":
+        if getattr(args, "use_opd", False) or args.advantage_estimator == "on_policy_distillation":
             thresholds = [0.0, -0.1, -0.2, -0.3, -0.4, -0.5]
             gt_thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
             for thr in thresholds:
-                log_dict[f"adv_ratio_<{thr}"] = float("nan")
+                log_dict[f"opd_reverse_kl_ratio_<{thr}"] = float("nan")
             for thr in gt_thresholds:
-                log_dict[f"adv_ratio_>{thr}"] = float("nan")
-            log_dict["positive_advantages_mean"] = 0.0
-            log_dict["negative_advantages_mean"] = 0.0
+                log_dict[f"opd_reverse_kl_ratio_>{thr}"] = float("nan")
+            log_dict["positive_opd_reverse_kl_mean"] = 0.0
+            log_dict["negative_opd_reverse_kl_mean"] = 0.0
             log_dict["opd_evict_ratio"] = 0.0
 
-            advantages = rollout_data.get("advantages")
+            opd_reverse_kls = rollout_data.get("opd_reverse_kl")
             opd_evict_mask = rollout_data.get("opd_evict_mask")
             if opd_evict_mask is not None:
                 evict_count = 0.0
@@ -380,53 +388,65 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 if evict_total > 0:
                     log_dict["opd_evict_ratio"] = evict_count / evict_total
 
-            if advantages is not None:
-                adv_count = 0.0
-                pos_adv_sum = 0.0
-                neg_adv_sum = 0.0
-                pos_adv_count = 0.0
-                neg_adv_count = 0.0
-                adv_ratio_lt = {thr: 0.0 for thr in thresholds}
-                adv_ratio_gt = {thr: 0.0 for thr in gt_thresholds}
-                for adv in advantages:
-                    if not isinstance(adv, torch.Tensor) or adv.numel() == 0:
+            if opd_reverse_kls is not None:
+                reverse_kl_count = 0.0
+                pos_reverse_kl_sum = 0.0
+                neg_reverse_kl_sum = 0.0
+                pos_reverse_kl_count = 0.0
+                neg_reverse_kl_count = 0.0
+                reverse_kl_ratio_lt = {thr: 0.0 for thr in thresholds}
+                reverse_kl_ratio_gt = {thr: 0.0 for thr in gt_thresholds}
+                for reverse_kl in opd_reverse_kls:
+                    if not isinstance(reverse_kl, torch.Tensor) or reverse_kl.numel() == 0:
                         continue
-                    adv = adv.float().clone().detach()
-                    adv_count += adv.numel()
+                    reverse_kl = reverse_kl.float().clone().detach()
+                    reverse_kl_count += reverse_kl.numel()
 
-                    pos_vals = adv[adv > 0]
-                    neg_vals = adv[adv < 0]
-                    pos_adv_sum += pos_vals.sum().item()
-                    neg_adv_sum += neg_vals.sum().item()
-                    pos_adv_count += pos_vals.numel()
-                    neg_adv_count += neg_vals.numel()
+                    pos_vals = reverse_kl[reverse_kl > 0]
+                    neg_vals = reverse_kl[reverse_kl < 0]
+                    pos_reverse_kl_sum += pos_vals.sum().item()
+                    neg_reverse_kl_sum += neg_vals.sum().item()
+                    pos_reverse_kl_count += pos_vals.numel()
+                    neg_reverse_kl_count += neg_vals.numel()
                     for thr in thresholds:
-                        adv_ratio_lt[thr] += (adv < thr).sum().item()
+                        reverse_kl_ratio_lt[thr] += (reverse_kl < thr).sum().item()
                     for thr in gt_thresholds:
-                        adv_ratio_gt[thr] += (adv > thr).sum().item()
+                        reverse_kl_ratio_gt[thr] += (reverse_kl > thr).sum().item()
 
-                stats_list = [adv_count, pos_adv_sum, pos_adv_count, neg_adv_sum, neg_adv_count]
-                stats_list.extend(adv_ratio_lt[thr] for thr in thresholds)
-                stats_list.extend(adv_ratio_gt[thr] for thr in gt_thresholds)
+                stats_list = [
+                    reverse_kl_count,
+                    pos_reverse_kl_sum,
+                    pos_reverse_kl_count,
+                    neg_reverse_kl_sum,
+                    neg_reverse_kl_count,
+                ]
+                stats_list.extend(reverse_kl_ratio_lt[thr] for thr in thresholds)
+                stats_list.extend(reverse_kl_ratio_gt[thr] for thr in gt_thresholds)
                 stats = torch.tensor(stats_list, dtype=torch.float64, device=torch.cuda.current_device())
                 if cp_size > 1:
                     dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=mpu.get_context_parallel_group())
 
                 stats_values = stats.tolist()
-                adv_count, pos_adv_sum, pos_adv_count, neg_adv_sum, neg_adv_count = stats_values[:5]
+                (
+                    reverse_kl_count,
+                    pos_reverse_kl_sum,
+                    pos_reverse_kl_count,
+                    neg_reverse_kl_sum,
+                    neg_reverse_kl_count,
+                ) = stats_values[:5]
                 lt_values = stats_values[5 : 5 + len(thresholds)]
                 gt_values = stats_values[5 + len(thresholds) :]
 
-                if adv_count > 0:
+                if reverse_kl_count > 0:
                     for thr, count in zip(thresholds, lt_values):
-                        log_dict[f"adv_ratio_<{thr}"] = count / adv_count
+                        log_dict[f"opd_reverse_kl_ratio_<{thr}"] = count / reverse_kl_count
                     for thr, count in zip(gt_thresholds, gt_values):
-                        log_dict[f"adv_ratio_>{thr}"] = count / adv_count
+                        log_dict[f"opd_reverse_kl_ratio_>{thr}"] = count / reverse_kl_count
 
-                if pos_adv_count > 0:
-                    log_dict["positive_advantages_mean"] = pos_adv_sum / pos_adv_count
-                if neg_adv_count > 0:
-                    log_dict["negative_advantages_mean"] = neg_adv_sum / neg_adv_count
+                if pos_reverse_kl_count > 0:
+                    log_dict["positive_opd_reverse_kl_mean"] = pos_reverse_kl_sum / pos_reverse_kl_count
+                if neg_reverse_kl_count > 0:
+                    log_dict["negative_opd_reverse_kl_mean"] = neg_reverse_kl_sum / neg_reverse_kl_count
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and reduced_log_dict is not None:

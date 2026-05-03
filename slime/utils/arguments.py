@@ -712,6 +712,11 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "on_policy_distillation",
                 ],
                 default="grpo",
+                help=(
+                    "Advantage estimator to use. OPD can be applied orthogonally with "
+                    "--use-opd and --opd-kl-coef; on_policy_distillation is kept as a "
+                    "backward-compatible pure OPD mode."
+                ),
             )
             parser.add_argument(
                 "--disable-compute-advantages-and-returns",
@@ -809,6 +814,24 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
+            )
+            return parser
+
+        def add_on_policy_distillation_arguments(parser):
+            parser.add_argument(
+                "--use-opd",
+                action="store_true",
+                default=False,
+                help=(
+                    "Enable on-policy distillation (OPD) as a KL penalty on top of the selected estimator. "
+                    "Teacher log-probs must be provided by rollout data."
+                ),
+            )
+            parser.add_argument(
+                "--opd-kl-coef",
+                type=float,
+                default=1.0,
+                help="On-policy distillation KL penalty coefficient.",
             )
             return parser
 
@@ -1166,6 +1189,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         parser = add_data_arguments(parser)
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
+        parser = add_on_policy_distillation_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_router_arguments(parser)

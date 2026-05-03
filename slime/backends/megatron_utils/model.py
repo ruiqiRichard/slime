@@ -364,6 +364,7 @@ def train_one_step(
                 "teacher_log_probs",
                 "student_log_probs",
                 "opd_evict_mask",
+                "opd_reverse_kl",
             ],
         )
 

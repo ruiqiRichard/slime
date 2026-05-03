@@ -179,15 +179,17 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data["loss_masks"] = [
             torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
         ]
-        if "rollout_log_probs" in rollout_data:
-            rollout_data["rollout_log_probs"] = [
+        for key in ["rollout_log_probs", "teacher_log_probs"]:
+            if key not in rollout_data:
+                continue
+            rollout_data[key] = [
                 torch.tensor(
                     slice_log_prob_with_cp(log_prob, total_length, response_length),
                     device=torch.cuda.current_device(),
                     dtype=torch.float32,
                 )
                 for log_prob, total_length, response_length in zip(
-                    rollout_data["rollout_log_probs"], rollout_data["total_lengths"], rollout_data["response_lengths"]
+                    rollout_data[key], rollout_data["total_lengths"], rollout_data["response_lengths"]
                 )
             ]
         if "rollout_routed_experts" in rollout_data:

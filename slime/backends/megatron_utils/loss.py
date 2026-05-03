@@ -218,6 +218,47 @@ def get_response_evict_masks(
     return response_evict_masks
 
 
+def apply_opd_kl_to_advantages(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    advantages: list[torch.Tensor],
+    student_log_probs: list[torch.Tensor] | None,
+) -> None:
+    """Apply on-policy distillation KL penalty to advantages.
+
+    Computes reverse KL (student_logp - teacher_logp) and adds weighted penalty
+    to advantages in-place. This is orthogonal to the base advantage estimator.
+
+    Args:
+        args: Configuration containing `use_opd` and `opd_kl_coef`.
+        rollout_data: Dict containing "teacher_log_probs".
+        advantages: List of advantage tensors to modify in-place.
+        student_log_probs: List of student log-probability tensors.
+
+    References:
+        https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/distillation/train_on_policy.py
+    """
+
+    if student_log_probs is None:
+        return
+
+    teacher_log_probs = rollout_data.get("teacher_log_probs")
+    if teacher_log_probs is None:
+        raise ValueError("OPD requires teacher_log_probs from rollout data, but it is missing.")
+
+    device = student_log_probs[0].device
+    teacher_log_probs = [t.to(device=device) for t in teacher_log_probs]
+
+    reverse_kls = []
+    for i, adv in enumerate(advantages):
+        reverse_kl = student_log_probs[i] - teacher_log_probs[i]
+        advantages[i] = adv - args.opd_kl_coef * reverse_kl
+        reverse_kls.append(reverse_kl)
+
+    # Store reverse KL for logging
+    rollout_data["opd_reverse_kl"] = reverse_kls
+
+
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
@@ -316,21 +357,25 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         returns = advantages
 
     elif args.advantage_estimator == "on_policy_distillation":
-        student_log_probs = log_probs
-        teacher_log_probs = rollout_data.get("teacher_log_probs")
-        response_lengths = rollout_data.get("response_lengths")
-        device = student_log_probs[0].device
-        teacher_log_probs = [t_log_prob.to(device=device) for t_log_prob in teacher_log_probs]
-        teacher_log_probs = [
-            t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths)
-        ]
-        advantages = returns = [
-            teacher_log_prob - student_log_prob
-            for teacher_log_prob, student_log_prob in zip(teacher_log_probs, student_log_probs)
-        ]
+        # Backward-compatible pure OPD mode. New configs should prefer a base
+        # estimator such as GRPO plus --use-opd, which applies the same KL
+        # penalty orthogonally below.
+        advantages = [torch.zeros_like(log_prob, dtype=torch.float32, device=log_prob.device) for log_prob in log_probs]
+        returns = advantages
 
     else:
         raise NotImplementedError(f"advantage_estimator {args.advantage_estimator} is not supported. ")
+
+    apply_opd = args.use_opd or args.advantage_estimator == "on_policy_distillation"
+    if apply_opd:
+        apply_opd_kl_to_advantages(
+            args=args,
+            rollout_data=rollout_data,
+            advantages=advantages,
+            student_log_probs=log_probs,
+        )
+        if args.advantage_estimator == "on_policy_distillation":
+            returns = advantages
 
     # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
     if args.normalize_advantages:
@@ -647,6 +692,10 @@ def policy_loss_function(
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()
+
+    if "opd_reverse_kl" in batch and batch["opd_reverse_kl"] is not None:
+        opd_reverse_kl = torch.cat(batch["opd_reverse_kl"], dim=0)
+        reported_loss["opd_reverse_kl"] = sum_of_sample_mean(opd_reverse_kl).clone().detach()
 
     if args.use_tis:
         reported_loss["ois"] = sum_of_sample_mean(ois).clone().detach()
