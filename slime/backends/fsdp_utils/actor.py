@@ -23,7 +23,6 @@ from slime.utils.ppo_utils import compute_approx_kl, compute_policy_loss
 from slime.utils.ray_utils import Box
 from slime.utils.timer import Timer, inverse_timer, timer
 from slime.utils.wandb_utils import init_wandb_secondary
-from slime.utils.opd_utils import get_opd_turn_advantages
 
 from ...utils.profile_utils import TrainProfiler
 from . import checkpoint

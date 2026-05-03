@@ -16,7 +16,6 @@ from slime.utils.ppo_utils import (
     get_reinforce_plus_plus_baseline_advantages,
     get_reinforce_plus_plus_returns,
 )
-from slime.utils.opd_utils import get_opd_turn_advantages
 from slime.utils.types import RolloutBatch
 
 from .cp_utils import (
