@@ -393,26 +393,11 @@ class FSDPTrainRayActor(TrainRayActor):
             teacher_log_probs = [
                 t_log_prob[-response_length:] for t_log_prob, response_length in zip(teacher_log_probs, response_lengths)
             ]
-            log_diffs = [
+            advantages = [
                 teacher_log_prob - student_log_prob
                 for teacher_log_prob, student_log_prob in zip(teacher_log_probs, student_log_probs)
             ]
-            
-            if self.args.opd_mode == "token":
-                advantages = log_diffs
-            elif self.args.opd_mode == "turn":
-                advantages = get_opd_turn_advantages(
-                    log_diffs=log_diffs,
-                    loss_masks=loss_masks,
-                )
-            elif self.args.opd_mode == "traj":
-                advantages = []
-                for log_diff, mask in zip(log_diffs, loss_masks):
-                    traj_adv = torch.zeros_like(log_diff)
-                    traj_sum = (log_diff * mask).sum()
-                    traj_mean = traj_sum / (mask.sum() + 1e-8)
-                    traj_adv += traj_mean
-                    advantages.append(traj_adv)
+
             rollout_data["advantages"] = advantages
             rollout_data["returns"] = advantages
         else:
