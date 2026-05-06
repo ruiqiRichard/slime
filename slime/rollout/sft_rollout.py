@@ -10,6 +10,13 @@ MASK_GENERATOR = None
 SAMPLE_PRINTED = False
 
 
+def _get_dataset_size(data_buffer):
+    dataset = getattr(data_buffer, "dataset", None)
+    if dataset is None:
+        return None
+    return len(dataset)
+
+
 def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     """An example to implement the generate_rollout function for an rule based rm rollout generation.
 
@@ -32,23 +39,60 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     if MASK_GENERATOR is None:
         MASK_GENERATOR = MultiTurnLossMaskGenerator(TOKENIZER, tokenizer_type=args.loss_mask_type)
 
-    samples = data_buffer.get_samples(args.rollout_batch_size)
+    max_context_len = args.rollout_max_context_len
+    dataset_size = _get_dataset_size(data_buffer)
+    if dataset_size == 0:
+        raise ValueError("SFT rollout dataset is empty, cannot build a rollout batch.")
 
-    for i, sample in enumerate(samples):
-        (sample,) = sample
-        messages = sample.prompt
-        token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages)
-        response_length = MASK_GENERATOR.get_response_lengths([loss_mask])[0]
+    samples = []
+    filtered_count = 0
+    checked_since_last_keep = 0
 
-        sample.tokens = token_ids
-        sample.response_length = response_length
-        sample.reward = 0
-        sample.loss_mask = loss_mask[-response_length:]
+    while len(samples) < args.rollout_batch_size:
+        remaining = args.rollout_batch_size - len(samples)
+        num_candidates = min(remaining, dataset_size) if dataset_size is not None else remaining
+        candidate_samples = data_buffer.get_samples(num_candidates)
 
-        if i == 0 and not SAMPLE_PRINTED:
-            print(
-                f"sft_rollout::generate_rollout example data: {sample=} (raw){messages=} (raw){token_ids=} (raw){loss_mask=} {response_length=}"
-            )
-            SAMPLE_PRINTED = True
+        for sample_group in candidate_samples:
+            (sample,) = sample_group
+            checked_since_last_keep += 1
+
+            messages = sample.prompt
+            token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages)
+            response_length = MASK_GENERATOR.get_response_lengths([loss_mask])[0]
+
+            if max_context_len is not None and len(token_ids) > max_context_len:
+                filtered_count += 1
+                if dataset_size is not None and checked_since_last_keep >= dataset_size:
+                    raise ValueError(
+                        "All samples in the SFT rollout dataset are longer than "
+                        f"rollout_max_context_len={max_context_len}; cannot build a batch of size "
+                        f"{args.rollout_batch_size}."
+                    )
+                continue
+
+            checked_since_last_keep = 0
+            samples.append(sample_group)
+
+            sample.tokens = token_ids
+            sample.response_length = response_length
+            sample.reward = 0
+            sample.loss_mask = loss_mask[-response_length:]
+
+            if len(samples) == 1 and not SAMPLE_PRINTED:
+                print(
+                    f"sft_rollout::generate_rollout example data: {sample=} (raw){messages=} (raw){token_ids=} (raw){loss_mask=} {response_length=}"
+                )
+                SAMPLE_PRINTED = True
+
+            if len(samples) == args.rollout_batch_size:
+                break
+
+    if filtered_count > 0:
+        print(
+            f"sft_rollout::generate_rollout filtered {filtered_count} samples longer than "
+            f"rollout_max_context_len={max_context_len}",
+            flush=True,
+        )
 
     return samples
