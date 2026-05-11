@@ -217,6 +217,44 @@ async def generate_and_rm(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
 ) -> Union[Sample, list[Sample]]:
+    timeout = getattr(args, "rollout_sample_timeout", 0) or 0
+    if timeout > 0:
+        try:
+            return await asyncio.wait_for(
+                _generate_and_rm(args, sample, sampling_params, evaluation=evaluation),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            _mark_aborted(sample, reason=f"sample_timeout_{timeout}s")
+            return sample
+
+    return await _generate_and_rm(args, sample, sampling_params, evaluation=evaluation)
+
+
+def _mark_aborted(sample: Union[Sample, list[Sample]], reason: str) -> None:
+    if isinstance(sample, list):
+        for item in sample:
+            _mark_aborted(item, reason)
+        return
+
+    sample.status = Sample.Status.ABORTED
+    if not isinstance(sample.metadata, dict):
+        sample.metadata = {}
+    sample.metadata["abort_reason"] = reason
+
+
+def _has_aborted(sample: Union[Sample, list[Sample]]) -> bool:
+    if isinstance(sample, list):
+        return any(_has_aborted(item) for item in sample)
+    return sample.status == Sample.Status.ABORTED
+
+
+async def _generate_and_rm(
+    args: Namespace,
+    sample: Union[Sample, list[Sample]],
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
+) -> Union[Sample, list[Sample]]:
     # For samples with existing response, check if they're complete
     if sample.status == Sample.Status.COMPLETED or sample.status == Sample.Status.TRUNCATED:
         assert sample.response is not None
@@ -379,6 +417,11 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             dynamic_filter_output = _call_dynamic_filter(dynamic_filter, args, group)
+            if _has_aborted(group):
+                metric_gatherer.on_dynamic_filter_drop(reason="aborted")
+                state.remaining_batch_size -= 1
+                continue
+
             if not dynamic_filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=dynamic_filter_output.reason)
                 state.remaining_batch_size -= 1

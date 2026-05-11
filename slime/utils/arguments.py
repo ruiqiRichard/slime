@@ -223,6 +223,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-sample-timeout",
+                type=float,
+                default=0.0,
+                help=(
+                    "Timeout in seconds for one sample's generation and reward computation. "
+                    "Set to 0 to disable. Timed out samples are marked aborted and their groups are dropped."
+                ),
+            )
+            parser.add_argument(
                 "--rollout-skip-special-tokens",
                 action="store_true",
                 default=False,
